@@ -111,10 +111,10 @@ deployment/
 
 ```bash
 # Download and run the installer
-curl -sSL https://raw.githubusercontent.com/your-repo/haproxy-manager/main/install.sh | sudo bash
+curl -sSL https://github.com/bhd-cap/proxy-manager/main/install.sh | sudo bash
 
 # Or download first and inspect
-wget https://raw.githubusercontent.com/your-repo/haproxy-manager/main/install.sh
+wget https://github.com/bhd-cap/proxy-manager/main/install.sh
 sudo bash install.sh
 ```
 
