@@ -111,10 +111,10 @@ deployment/
 
 ```bash
 # Download and run the installer
-curl -sSL https://github.com/bhd-cap/proxy-manager/main/install.sh | sudo bash
+curl -sSL https://github.com/bhd-cap/proxy-manager/blob/main/install_script.sh | sudo bash
 
 # Or download first and inspect
-wget https://github.com/bhd-cap/proxy-manager/main/install.sh
+wget https://github.com/bhd-cap/proxy-manager/blob/main/install_script.sh
 sudo bash install.sh
 ```
 
