@@ -114,6 +114,126 @@ class APIClient {
   async healthCheck() {
     return this.request('/health');
   }
+
+  // User Management
+  async getUsers() {
+    return this.request('/users');
+  }
+
+  async createUser(username: string, password: string) {
+    return this.request('/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+  }
+
+  async deleteUser(username: string) {
+    return this.request(`/users/${username}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async changePassword(username: string, password: string) {
+    return this.request(`/users/${username}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    });
+  }
+
+  // Frontend Server Management
+  async getFrontends() {
+    return this.request('/frontends');
+  }
+
+  async createFrontend(data: any) {
+    return this.request('/frontends', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateFrontend(id: number, data: any) {
+    return this.request(`/frontends/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteFrontend(id: number) {
+    return this.request(`/frontends/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Backend Server Management
+  async getBackends() {
+    return this.request('/backends');
+  }
+
+  async createBackend(data: any) {
+    return this.request('/backends', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateBackend(id: number, data: any) {
+    return this.request(`/backends/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteBackend(id: number) {
+    return this.request(`/backends/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async addBackendServer(backendName: string, data: any) {
+    return this.request(`/backends/${backendName}/servers`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteBackendServer(backendName: string, serverId: number) {
+    return this.request(`/backends/${backendName}/servers/${serverId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Connection History
+  async getConnectionHistory(serverName?: string, serverType?: string, limit?: number) {
+    const params = new URLSearchParams();
+    if (serverName) params.append('server_name', serverName);
+    if (serverType) params.append('server_type', serverType);
+    if (limit) params.append('limit', limit.toString());
+
+    const query = params.toString();
+    return this.request(`/connections${query ? '?' + query : ''}`);
+  }
+
+  async getActiveConnections() {
+    return this.request('/connections/active');
+  }
+
+  // HAProxy Config Management
+  async applyConfig() {
+    return this.request('/haproxy/apply', {
+      method: 'POST',
+    });
+  }
+
+  async getBackups() {
+    return this.request('/haproxy/backups');
+  }
+
+  async restoreBackup(backupId: number) {
+    return this.request(`/haproxy/backups/${backupId}/restore`, {
+      method: 'POST',
+    });
+  }
 }
 
 export const api = new APIClient();

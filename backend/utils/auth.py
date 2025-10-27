@@ -6,36 +6,20 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import request, jsonify
 import os
+from .database import init_database, get_db_connection
 
 # Session store (consider Redis for production)
 sessions = {}
 
-def get_db_connection():
-    """Get database connection"""
-    db_path = os.getenv('DATABASE_PATH', '/var/lib/haproxy-manager/users.db')
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def init_db():
-    """Initialize database with users table"""
-    db_path = os.getenv('DATABASE_PATH', '/var/lib/haproxy-manager/users.db')
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Create users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    """Initialize database with all tables"""
+    # Initialize all database tables
+    init_database()
 
     # Create default admin user if not exists
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
     cursor.execute('SELECT COUNT(*) FROM users WHERE username = ?', ('admin',))
     if cursor.fetchone()[0] == 0:
         password_hash = hash_password('admin')
