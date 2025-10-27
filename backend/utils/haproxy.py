@@ -3,7 +3,9 @@ import subprocess
 import socket
 import os
 import re
+import hashlib
 from datetime import datetime
+from .database import get_db_connection, log_audit
 
 def get_haproxy_config_path():
     """Get HAProxy configuration file path"""
@@ -362,3 +364,254 @@ def toggle_server(backend_name, server_name, enable):
 
     except Exception as e:
         return {'success': False, 'error': f'Failed to toggle server: {str(e)}'}
+
+def apply_config_and_restart(username, ip_address):
+    """Apply database configuration to HAProxy and restart service"""
+    try:
+        config_path = get_haproxy_config_path()
+
+        # Create backup first
+        backup_path = f'{config_path}.backup.{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                backup_content = f.read()
+            with open(backup_path, 'w') as f:
+                f.write(backup_content)
+
+            # Calculate hash
+            config_hash = hashlib.sha256(backup_content.encode()).hexdigest()
+
+            # Track backup in database
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO config_backups (filename, filepath, description, created_by, config_hash)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                os.path.basename(backup_path),
+                backup_path,
+                'Auto-backup before apply',
+                username,
+                config_hash
+            ))
+            conn.commit()
+            conn.close()
+
+        # Read configuration from database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        config_lines = []
+
+        # Global section (use default)
+        config_lines.extend([
+            'global',
+            '    log /dev/log local0',
+            '    log /dev/log local1 notice',
+            '    chroot /var/lib/haproxy',
+            '    stats socket /run/haproxy/admin.sock mode 660 level admin',
+            '    stats timeout 30s',
+            '    user haproxy',
+            '    group haproxy',
+            '    daemon',
+            ''
+        ])
+
+        # Defaults section
+        config_lines.extend([
+            'defaults',
+            '    log     global',
+            '    mode    tcp',
+            '    option  tcplog',
+            '    option  dontlognull',
+            '    timeout connect 5000',
+            '    timeout client  50000',
+            '    timeout server  50000',
+            ''
+        ])
+
+        # Frontends from database
+        cursor.execute('SELECT * FROM frontend_servers WHERE enabled = 1 ORDER BY name')
+        for frontend in cursor.fetchall():
+            config_lines.append(f'frontend {frontend["name"]}')
+            config_lines.append(f'    bind {frontend["bind_address"]}:{frontend["bind_port"]}')
+            config_lines.append(f'    mode {frontend["mode"]}')
+            if frontend['default_backend']:
+                config_lines.append(f'    default_backend {frontend["default_backend"]}')
+            config_lines.append('')
+
+        # Backends from database
+        cursor.execute('SELECT * FROM backend_servers WHERE enabled = 1 ORDER BY name')
+        for backend in cursor.fetchall():
+            config_lines.append(f'backend {backend["name"]}')
+            config_lines.append(f'    mode {backend["mode"]}')
+            config_lines.append(f'    balance {backend["balance"]}')
+
+            # Get servers for this backend
+            cursor.execute('''
+                SELECT * FROM backend_server_list
+                WHERE backend_name = ? AND enabled = 1
+                ORDER BY server_name
+            ''', (backend['name'],))
+
+            for server in cursor.fetchall():
+                options = []
+                if server['check_enabled']:
+                    options.append('check')
+                if server['weight'] != 1:
+                    options.append(f'weight {server["weight"]}')
+                if server['maxconn'] != 32:
+                    options.append(f'maxconn {server["maxconn"]}')
+
+                options_str = ' '.join(options)
+                config_lines.append(f'    server {server["server_name"]} {server["address"]}:{server["port"]} {options_str}'.strip())
+
+            config_lines.append('')
+
+        conn.close()
+
+        # Write configuration
+        config_content = '\n'.join(config_lines)
+        with open(config_path, 'w') as f:
+            f.write(config_content)
+
+        # Validate configuration
+        result = subprocess.run(
+            ['haproxy', '-c', '-f', config_path],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            # Restore backup if validation fails
+            with open(backup_path, 'r') as f:
+                backup_content = f.read()
+            with open(config_path, 'w') as f:
+                f.write(backup_content)
+            return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+
+        # Restart HAProxy
+        restart_result = subprocess.run(
+            ['sudo', 'systemctl', 'restart', 'haproxy'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if restart_result.returncode != 0:
+            # Restore backup if restart fails
+            with open(backup_path, 'r') as f:
+                backup_content = f.read()
+            with open(config_path, 'w') as f:
+                f.write(backup_content)
+            return {'success': False, 'error': f'Failed to restart HAProxy: {restart_result.stderr}'}
+
+        log_audit(username, 'apply_config', 'haproxy', None, 'Configuration applied and service restarted', ip_address)
+
+        return {'success': True, 'backup': backup_path, 'message': 'Configuration applied and HAProxy restarted successfully'}
+
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to apply configuration: {str(e)}'}
+
+def list_config_backups():
+    """List all configuration backups"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT id, filename, filepath, description, created_by, config_hash, created_at
+        FROM config_backups
+        ORDER BY created_at DESC
+    ''')
+
+    backups = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    return backups
+
+def restore_backup(backup_id, username, ip_address):
+    """Restore a configuration backup"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Get backup info
+        cursor.execute('SELECT * FROM config_backups WHERE id = ?', (backup_id,))
+        backup = cursor.fetchone()
+
+        if not backup:
+            conn.close()
+            return {'success': False, 'error': 'Backup not found'}
+
+        backup_path = backup['filepath']
+
+        if not os.path.exists(backup_path):
+            conn.close()
+            return {'success': False, 'error': 'Backup file not found on filesystem'}
+
+        # Read backup content
+        with open(backup_path, 'r') as f:
+            backup_content = f.read()
+
+        config_path = get_haproxy_config_path()
+
+        # Create a backup of current config before restoring
+        current_backup_path = f'{config_path}.backup.{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                current_content = f.read()
+            with open(current_backup_path, 'w') as f:
+                f.write(current_content)
+
+        # Restore backup
+        with open(config_path, 'w') as f:
+            f.write(backup_content)
+
+        # Validate configuration
+        result = subprocess.run(
+            ['haproxy', '-c', '-f', config_path],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            # Restore current config if validation fails
+            with open(current_backup_path, 'r') as f:
+                current_content = f.read()
+            with open(config_path, 'w') as f:
+                f.write(current_content)
+            conn.close()
+            return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+
+        # Restart HAProxy
+        restart_result = subprocess.run(
+            ['sudo', 'systemctl', 'restart', 'haproxy'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if restart_result.returncode != 0:
+            # Restore current config if restart fails
+            with open(current_backup_path, 'r') as f:
+                current_content = f.read()
+            with open(config_path, 'w') as f:
+                f.write(current_content)
+            conn.close()
+            return {'success': False, 'error': f'Failed to restart HAProxy: {restart_result.stderr}'}
+
+        log_audit(username, 'restore_backup', 'haproxy', backup['filename'], f'Restored backup ID {backup_id}', ip_address)
+
+        conn.close()
+
+        return {'success': True, 'message': f'Backup restored successfully: {backup["filename"]}'}
+
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to restore backup: {str(e)}'}
+
+def track_connection_history(stats):
+    """Track connection history with IP addresses from HAProxy stats"""
+    # This function would be called periodically to track connections
+    # For now, it's a placeholder for future implementation
+    # You would need to parse HAProxy logs or use show sess command for IP tracking
+    pass

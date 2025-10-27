@@ -1,16 +1,19 @@
 import { useState, useEffect } from 'react'
-import { LogOut, Activity, Settings, Server, Database } from 'lucide-react'
+import { LogOut, Activity, Settings, Server, Database, Users, History, Wrench } from 'lucide-react'
 import { api } from '../utils/api'
 import Overview from './Overview'
-import Frontends from './Frontends'
-import Backends from './Backends'
+import FrontendManagement from './FrontendManagement'
+import BackendManagement from './BackendManagement'
 import Configuration from './Configuration'
+import UserManagement from './UserManagement'
+import ConnectionHistory from './ConnectionHistory'
+import ConfigManagement from './ConfigManagement'
 
 interface DashboardProps {
   onLogout: () => void
 }
 
-type Tab = 'overview' | 'frontends' | 'backends' | 'configuration'
+type Tab = 'overview' | 'frontends' | 'backends' | 'configuration' | 'users' | 'connections' | 'config-management'
 
 export default function Dashboard({ onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview')
@@ -80,7 +83,10 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     { id: 'overview', label: 'Overview', icon: Activity },
     { id: 'frontends', label: 'Frontends', icon: Server },
     { id: 'backends', label: 'Backends', icon: Database },
+    { id: 'connections', label: 'Connections', icon: History },
     { id: 'configuration', label: 'Configuration', icon: Settings },
+    { id: 'config-management', label: 'Config Management', icon: Wrench },
+    { id: 'users', label: 'Users', icon: Users },
   ]
 
   return (
@@ -205,22 +211,34 @@ export default function Dashboard({ onLogout }: DashboardProps) {
           <>
             {activeTab === 'overview' && <Overview stats={stats} />}
             {activeTab === 'frontends' && (
-              <Frontends
-                frontends={config?.frontends || []}
-                stats={stats}
+              <FrontendManagement
+                onNotification={showNotification}
               />
             )}
             {activeTab === 'backends' && (
-              <Backends
-                backends={config?.backends || []}
-                stats={stats}
-                onServerToggle={handleServerToggle}
+              <BackendManagement
+                onNotification={showNotification}
+              />
+            )}
+            {activeTab === 'connections' && (
+              <ConnectionHistory
+                onNotification={showNotification}
               />
             )}
             {activeTab === 'configuration' && (
               <Configuration
                 config={config}
                 onUpdate={handleConfigUpdate}
+              />
+            )}
+            {activeTab === 'config-management' && (
+              <ConfigManagement
+                onNotification={showNotification}
+              />
+            )}
+            {activeTab === 'users' && (
+              <UserManagement
+                onNotification={showNotification}
               />
             )}
           </>
