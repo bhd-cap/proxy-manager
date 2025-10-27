@@ -62,6 +62,38 @@ detect_os() {
     log_info "Detected OS: $OS $VER"
 }
 
+install_nodejs() {
+    log_info "Installing Node.js 20.x LTS..."
+
+    case $OS in
+        ubuntu|debian)
+            # Install curl if not present
+            apt-get install -y curl
+
+            # Install Node.js 20.x from NodeSource
+            curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+            apt-get install -y nodejs
+            ;;
+        rhel|centos|rocky)
+            # Install curl if not present
+            yum install -y curl
+
+            # Install Node.js 20.x from NodeSource
+            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+            yum install -y nodejs
+            ;;
+        *)
+            log_error "Unsupported OS: $OS"
+            exit 1
+            ;;
+    esac
+
+    # Verify installation
+    NODE_VERSION=$(node --version)
+    NPM_VERSION=$(npm --version)
+    log_success "Node.js $NODE_VERSION and npm $NPM_VERSION installed"
+}
+
 install_dependencies() {
     log_info "Installing system dependencies..."
 
@@ -75,8 +107,6 @@ install_dependencies() {
                 haproxy \
                 nginx \
                 socat \
-                nodejs \
-                npm \
                 sudo
             ;;
         rhel|centos|rocky)
@@ -87,8 +117,6 @@ install_dependencies() {
                 haproxy \
                 nginx \
                 socat \
-                nodejs \
-                npm \
                 sudo
             ;;
         *)
@@ -96,6 +124,9 @@ install_dependencies() {
             exit 1
             ;;
     esac
+
+    # Install Node.js after other dependencies
+    install_nodejs
 
     log_success "System dependencies installed"
 }
