@@ -6,7 +6,10 @@ bind = "127.0.0.1:5000"
 backlog = 2048
 
 # Worker processes
-workers = multiprocessing.cpu_count() * 2 + 1
+# NOTE: Using 1 worker because sessions are stored in-memory.
+# For high-traffic deployments, implement Redis-backed sessions
+# and increase workers to: multiprocessing.cpu_count() * 2 + 1
+workers = 1
 worker_class = 'sync'
 worker_connections = 1000
 timeout = 30
