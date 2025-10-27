@@ -7,6 +7,9 @@
 
 set -e
 
+# Save the directory where the script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -122,7 +125,7 @@ install_backend() {
     log_info "Installing backend..."
 
     # Copy backend files
-    cp -r backend/* $APP_DIR/backend/
+    cp -r $SCRIPT_DIR/backend/* $APP_DIR/backend/
 
     # Create virtual environment
     cd $APP_DIR/backend
@@ -135,6 +138,9 @@ install_backend() {
 
     deactivate
 
+    # Return to script directory
+    cd $SCRIPT_DIR
+
     log_success "Backend installed"
 }
 
@@ -142,7 +148,7 @@ install_frontend() {
     log_info "Installing frontend..."
 
     # Copy frontend files
-    cp -r frontend/* $APP_DIR/frontend/
+    cp -r $SCRIPT_DIR/frontend/* $APP_DIR/frontend/
 
     # Install Node dependencies and build
     cd $APP_DIR/frontend
@@ -150,6 +156,9 @@ install_frontend() {
 
     # Build production version
     npm run build
+
+    # Return to script directory
+    cd $SCRIPT_DIR
 
     log_success "Frontend built"
 }
