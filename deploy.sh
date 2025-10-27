@@ -337,8 +337,24 @@ set_permissions() {
     chown -R $APP_USER:$APP_USER $LOG_DIR
     chown -R $APP_USER:$APP_USER $RUN_DIR
 
-    # Make sure frontend dist is readable by nginx
-    chmod -R 755 $APP_DIR/frontend/dist
+    # Make sure NGINX can traverse parent directories and read frontend files
+    # Set execute permission on parent directories so NGINX can traverse them
+    chmod 755 $APP_DIR
+    chmod 755 $APP_DIR/frontend
+
+    # Make frontend dist directory and all contents readable by nginx
+    if [ -d "$APP_DIR/frontend/dist" ]; then
+        chmod -R 755 $APP_DIR/frontend/dist
+        log_info "Frontend dist permissions set to 755"
+    else
+        log_warning "Frontend dist directory not found, skipping dist permissions"
+    fi
+
+    # Set SELinux context if SELinux is enabled (RHEL/CentOS)
+    if command -v getenforce &> /dev/null && [ "$(getenforce)" != "Disabled" ]; then
+        log_info "Setting SELinux contexts for NGINX..."
+        chcon -R -t httpd_sys_content_t $APP_DIR/frontend/dist 2>/dev/null || log_warning "Could not set SELinux context"
+    fi
 
     log_success "Permissions set"
 }
