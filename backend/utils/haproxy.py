@@ -4,6 +4,7 @@ import socket
 import os
 import re
 import hashlib
+import shutil
 from datetime import datetime
 from .database import get_db_connection, log_audit
 
@@ -14,6 +15,12 @@ def get_haproxy_config_path():
 def get_haproxy_socket_path():
     """Get HAProxy admin socket path"""
     return os.getenv('HAPROXY_SOCKET_PATH', '/run/haproxy/admin.sock')
+
+def get_backup_directory():
+    """Get backup directory path and ensure it exists"""
+    backup_dir = os.getenv('BACKUP_DIR', '/var/lib/haproxy-manager/backups')
+    os.makedirs(backup_dir, exist_ok=True)
+    return backup_dir
 
 def read_haproxy_stats():
     """Read HAProxy statistics from admin socket"""
@@ -217,15 +224,16 @@ def parse_haproxy_config():
 def write_haproxy_config(config_data):
     """Write HAProxy configuration file"""
     config_path = get_haproxy_config_path()
+    backup_dir = get_backup_directory()
 
     try:
-        # Create backup
-        backup_path = f'{config_path}.backup.{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        # Create backup in backup directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f'haproxy.cfg.backup.{timestamp}'
+        backup_path = os.path.join(backup_dir, backup_filename)
+
         if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                backup_content = f.read()
-            with open(backup_path, 'w') as f:
-                f.write(backup_content)
+            shutil.copy2(config_path, backup_path)
 
         # Build configuration
         config_lines = []
@@ -299,25 +307,36 @@ def write_haproxy_config(config_data):
                         config_lines.append(f'    {line.strip()}')
             config_lines.append('')
 
-        # Write configuration
+        # Write configuration to temporary file first
         config_content = '\n'.join(config_lines)
-        with open(config_path, 'w') as f:
+        temp_config_path = os.path.join(backup_dir, f'haproxy.cfg.tmp.{timestamp}')
+        with open(temp_config_path, 'w') as f:
             f.write(config_content)
 
         # Validate configuration
         result = subprocess.run(
-            ['haproxy', '-c', '-f', config_path],
+            ['haproxy', '-c', '-f', temp_config_path],
             capture_output=True,
             text=True
         )
 
         if result.returncode != 0:
-            # Restore backup if validation fails
-            with open(backup_path, 'r') as f:
-                backup_content = f.read()
-            with open(config_path, 'w') as f:
-                f.write(backup_content)
+            os.remove(temp_config_path)
             return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+
+        # Copy validated config to HAProxy location using sudo
+        copy_result = subprocess.run(
+            ['sudo', 'cp', temp_config_path, config_path],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        # Clean up temp file
+        os.remove(temp_config_path)
+
+        if copy_result.returncode != 0:
+            return {'success': False, 'error': f'Failed to copy config file: {copy_result.stderr}'}
 
         return {'success': True, 'backup': backup_path}
 
@@ -369,12 +388,19 @@ def apply_config_and_restart(username, ip_address):
     """Apply database configuration to HAProxy and restart service"""
     try:
         config_path = get_haproxy_config_path()
+        backup_dir = get_backup_directory()
 
         # Create backup first
-        backup_path = f'{config_path}.backup.{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f'haproxy.cfg.backup.{timestamp}'
+        backup_path = os.path.join(backup_dir, backup_filename)
+
         if os.path.exists(config_path):
+            # Read current config
             with open(config_path, 'r') as f:
                 backup_content = f.read()
+
+            # Write backup to backup directory
             with open(backup_path, 'w') as f:
                 f.write(backup_content)
 
@@ -388,7 +414,7 @@ def apply_config_and_restart(username, ip_address):
                 INSERT INTO config_backups (filename, filepath, description, created_by, config_hash)
                 VALUES (?, ?, ?, ?, ?)
             ''', (
-                os.path.basename(backup_path),
+                backup_filename,
                 backup_path,
                 'Auto-backup before apply',
                 username,
@@ -470,25 +496,37 @@ def apply_config_and_restart(username, ip_address):
 
         conn.close()
 
-        # Write configuration
+        # Write configuration to temporary file first
         config_content = '\n'.join(config_lines)
-        with open(config_path, 'w') as f:
+        temp_config_path = os.path.join(backup_dir, f'haproxy.cfg.tmp.{timestamp}')
+        with open(temp_config_path, 'w') as f:
             f.write(config_content)
 
         # Validate configuration
         result = subprocess.run(
-            ['haproxy', '-c', '-f', config_path],
+            ['haproxy', '-c', '-f', temp_config_path],
             capture_output=True,
             text=True
         )
 
         if result.returncode != 0:
-            # Restore backup if validation fails
-            with open(backup_path, 'r') as f:
-                backup_content = f.read()
-            with open(config_path, 'w') as f:
-                f.write(backup_content)
+            os.remove(temp_config_path)
             return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+
+        # Copy validated config to HAProxy config location using sudo
+        copy_result = subprocess.run(
+            ['sudo', 'cp', temp_config_path, config_path],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if copy_result.returncode != 0:
+            os.remove(temp_config_path)
+            return {'success': False, 'error': f'Failed to copy config file: {copy_result.stderr}'}
+
+        # Clean up temp file
+        os.remove(temp_config_path)
 
         # Restart HAProxy
         restart_result = subprocess.run(
@@ -500,10 +538,12 @@ def apply_config_and_restart(username, ip_address):
 
         if restart_result.returncode != 0:
             # Restore backup if restart fails
-            with open(backup_path, 'r') as f:
-                backup_content = f.read()
-            with open(config_path, 'w') as f:
-                f.write(backup_content)
+            restore_result = subprocess.run(
+                ['sudo', 'cp', backup_path, config_path],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
             return {'success': False, 'error': f'Failed to restart HAProxy: {restart_result.stderr}'}
 
         log_audit(username, 'apply_config', 'haproxy', None, 'Configuration applied and service restarted', ip_address)
@@ -549,39 +589,57 @@ def restore_backup(backup_id, username, ip_address):
             conn.close()
             return {'success': False, 'error': 'Backup file not found on filesystem'}
 
-        # Read backup content
-        with open(backup_path, 'r') as f:
-            backup_content = f.read()
-
         config_path = get_haproxy_config_path()
+        backup_dir = get_backup_directory()
 
         # Create a backup of current config before restoring
-        current_backup_path = f'{config_path}.backup.{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        current_backup_filename = f'haproxy.cfg.backup.{timestamp}'
+        current_backup_path = os.path.join(backup_dir, current_backup_filename)
+
         if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
+            # Copy current config to backup directory
+            shutil.copy2(config_path, current_backup_path)
+
+            # Save to database
+            with open(current_backup_path, 'r') as f:
                 current_content = f.read()
-            with open(current_backup_path, 'w') as f:
-                f.write(current_content)
+            config_hash = hashlib.sha256(current_content.encode()).hexdigest()
 
-        # Restore backup
-        with open(config_path, 'w') as f:
-            f.write(backup_content)
+            cursor.execute('''
+                INSERT INTO config_backups (filename, filepath, description, created_by, config_hash)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                current_backup_filename,
+                current_backup_path,
+                'Auto-backup before restore',
+                username,
+                config_hash
+            ))
+            conn.commit()
 
-        # Validate configuration
+        # Validate the backup configuration before restoring
         result = subprocess.run(
-            ['haproxy', '-c', '-f', config_path],
+            ['haproxy', '-c', '-f', backup_path],
             capture_output=True,
             text=True
         )
 
         if result.returncode != 0:
-            # Restore current config if validation fails
-            with open(current_backup_path, 'r') as f:
-                current_content = f.read()
-            with open(config_path, 'w') as f:
-                f.write(current_content)
             conn.close()
-            return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+            return {'success': False, 'error': f'Backup configuration validation failed: {result.stderr}'}
+
+        # Copy backup to HAProxy config location using sudo
+        copy_result = subprocess.run(
+            ['sudo', 'cp', backup_path, config_path],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if copy_result.returncode != 0:
+            conn.close()
+            return {'success': False, 'error': f'Failed to copy backup file: {copy_result.stderr}'}
 
         # Restart HAProxy
         restart_result = subprocess.run(
@@ -593,10 +651,12 @@ def restore_backup(backup_id, username, ip_address):
 
         if restart_result.returncode != 0:
             # Restore current config if restart fails
-            with open(current_backup_path, 'r') as f:
-                current_content = f.read()
-            with open(config_path, 'w') as f:
-                f.write(current_content)
+            restore_result = subprocess.run(
+                ['sudo', 'cp', current_backup_path, config_path],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
             conn.close()
             return {'success': False, 'error': f'Failed to restart HAProxy: {restart_result.stderr}'}
 
