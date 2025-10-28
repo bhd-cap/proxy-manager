@@ -197,6 +197,13 @@ class APIClient {
     });
   }
 
+  async updateBackendServer(backendName: string, serverId: number, data: any) {
+    return this.request(`/backends/${backendName}/servers/${serverId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
   async deleteBackendServer(backendName: string, serverId: number) {
     return this.request(`/backends/${backendName}/servers/${serverId}`, {
       method: 'DELETE',
