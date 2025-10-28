@@ -16,11 +16,49 @@ def get_haproxy_socket_path():
     """Get HAProxy admin socket path"""
     return os.getenv('HAPROXY_SOCKET_PATH', '/run/haproxy/admin.sock')
 
+def get_haproxy_binary_path():
+    """Get HAProxy binary path"""
+    return os.getenv('HAPROXY_BINARY', '/usr/sbin/haproxy')
+
 def get_backup_directory():
     """Get backup directory path and ensure it exists"""
     backup_dir = os.getenv('BACKUP_DIR', '/var/lib/haproxy-manager/backups')
     os.makedirs(backup_dir, exist_ok=True)
     return backup_dir
+
+def validate_haproxy_config(config_path):
+    """Validate HAProxy configuration file"""
+    haproxy_binary = get_haproxy_binary_path()
+
+    # Check if HAProxy binary exists
+    if not os.path.exists(haproxy_binary):
+        # Try to find HAProxy in common locations
+        for path in ['/usr/sbin/haproxy', '/usr/local/sbin/haproxy', '/sbin/haproxy']:
+            if os.path.exists(path):
+                haproxy_binary = path
+                break
+        else:
+            # HAProxy not found - skip validation in dev environments
+            if os.getenv('SKIP_HAPROXY_VALIDATION', 'false').lower() == 'true':
+                return {'success': True, 'warning': 'HAProxy validation skipped (not installed)'}
+            return {'success': False, 'error': 'HAProxy binary not found. Set HAPROXY_BINARY environment variable or install HAProxy.'}
+
+    try:
+        result = subprocess.run(
+            [haproxy_binary, '-c', '-f', config_path],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+
+        return {'success': True}
+    except subprocess.TimeoutExpired:
+        return {'success': False, 'error': 'Configuration validation timed out'}
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to validate configuration: {str(e)}'}
 
 def read_haproxy_stats():
     """Read HAProxy statistics from admin socket"""
@@ -314,15 +352,11 @@ def write_haproxy_config(config_data):
             f.write(config_content)
 
         # Validate configuration
-        result = subprocess.run(
-            ['haproxy', '-c', '-f', temp_config_path],
-            capture_output=True,
-            text=True
-        )
+        validation_result = validate_haproxy_config(temp_config_path)
 
-        if result.returncode != 0:
+        if not validation_result['success']:
             os.remove(temp_config_path)
-            return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+            return validation_result
 
         # Copy validated config to HAProxy location using sudo
         copy_result = subprocess.run(
@@ -338,7 +372,11 @@ def write_haproxy_config(config_data):
         if copy_result.returncode != 0:
             return {'success': False, 'error': f'Failed to copy config file: {copy_result.stderr}'}
 
-        return {'success': True, 'backup': backup_path}
+        result = {'success': True, 'backup': backup_path}
+        if 'warning' in validation_result:
+            result['warning'] = validation_result['warning']
+
+        return result
 
     except Exception as e:
         return {'success': False, 'error': f'Failed to write configuration: {str(e)}'}
@@ -503,15 +541,11 @@ def apply_config_and_restart(username, ip_address):
             f.write(config_content)
 
         # Validate configuration
-        result = subprocess.run(
-            ['haproxy', '-c', '-f', temp_config_path],
-            capture_output=True,
-            text=True
-        )
+        validation_result = validate_haproxy_config(temp_config_path)
 
-        if result.returncode != 0:
+        if not validation_result['success']:
             os.remove(temp_config_path)
-            return {'success': False, 'error': f'Configuration validation failed: {result.stderr}'}
+            return validation_result
 
         # Copy validated config to HAProxy config location using sudo
         copy_result = subprocess.run(
@@ -548,7 +582,11 @@ def apply_config_and_restart(username, ip_address):
 
         log_audit(username, 'apply_config', 'haproxy', None, 'Configuration applied and service restarted', ip_address)
 
-        return {'success': True, 'backup': backup_path, 'message': 'Configuration applied and HAProxy restarted successfully'}
+        result = {'success': True, 'backup': backup_path, 'message': 'Configuration applied and HAProxy restarted successfully'}
+        if 'warning' in validation_result:
+            result['warning'] = validation_result['warning']
+
+        return result
 
     except Exception as e:
         return {'success': False, 'error': f'Failed to apply configuration: {str(e)}'}
@@ -619,15 +657,11 @@ def restore_backup(backup_id, username, ip_address):
             conn.commit()
 
         # Validate the backup configuration before restoring
-        result = subprocess.run(
-            ['haproxy', '-c', '-f', backup_path],
-            capture_output=True,
-            text=True
-        )
+        validation_result = validate_haproxy_config(backup_path)
 
-        if result.returncode != 0:
+        if not validation_result['success']:
             conn.close()
-            return {'success': False, 'error': f'Backup configuration validation failed: {result.stderr}'}
+            return validation_result
 
         # Copy backup to HAProxy config location using sudo
         copy_result = subprocess.run(
@@ -664,7 +698,11 @@ def restore_backup(backup_id, username, ip_address):
 
         conn.close()
 
-        return {'success': True, 'message': f'Backup restored successfully: {backup["filename"]}'}
+        result = {'success': True, 'message': f'Backup restored successfully: {backup["filename"]}'}
+        if 'warning' in validation_result:
+            result['warning'] = validation_result['warning']
+
+        return result
 
     except Exception as e:
         return {'success': False, 'error': f'Failed to restore backup: {str(e)}'}
