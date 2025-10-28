@@ -627,6 +627,62 @@ def add_backend_server(backend_name):
     finally:
         conn.close()
 
+@app.route('/api/backends/<backend_name>/servers/<int:server_id>', methods=['PUT'])
+@require_auth
+def update_backend_server(backend_name, server_id):
+    """Update a backend server (e.g., enable/disable)"""
+    data = request.json
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Build update query dynamically
+        update_fields = []
+        params = []
+
+        for field in ['enabled', 'weight', 'maxconn', 'check_enabled']:
+            if field in data:
+                update_fields.append(f'{field} = ?')
+                params.append(data[field])
+
+        if not update_fields:
+            return jsonify({'error': 'No fields to update'}), 400
+
+        update_fields.append('updated_at = CURRENT_TIMESTAMP')
+        params.extend([server_id, backend_name])
+
+        cursor.execute(f'''
+            UPDATE backend_server_list
+            SET {', '.join(update_fields)}
+            WHERE id = ? AND backend_name = ?
+        ''', params)
+
+        conn.commit()
+
+        if cursor.rowcount == 0:
+            return jsonify({'error': 'Server not found'}), 404
+
+        log_audit(
+            request.username,
+            'update_backend_server',
+            'backend_server',
+            f"{backend_name}/{server_id}",
+            f"enabled={data.get('enabled')}",
+            request.remote_addr
+        )
+
+        return jsonify({'success': True}), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route('/api/backends/<backend_name>/servers/<int:server_id>', methods=['DELETE'])
 @require_auth
 def remove_backend_server(backend_name, server_id):

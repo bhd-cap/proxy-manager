@@ -116,6 +116,16 @@ export default function BackendManagement({ onNotification }: BackendManagementP
     }
   }
 
+  const handleToggleServer = async (backendName: string, serverId: number, currentlyEnabled: number) => {
+    try {
+      await api.updateBackendServer(backendName, serverId, { enabled: currentlyEnabled ? 0 : 1 })
+      onNotification(`Server ${currentlyEnabled ? 'disabled' : 'enabled'} successfully`, 'success')
+      await loadBackends()
+    } catch (error: any) {
+      onNotification(error.message || 'Failed to toggle server', 'error')
+    }
+  }
+
   const handleDeleteServer = async (backendName: string, serverId: number, serverName: string) => {
     if (!confirm(`Are you sure you want to delete server ${serverName}?`)) {
       return
@@ -523,22 +533,39 @@ export default function BackendManagement({ onNotification }: BackendManagementP
                           </span>
                         </td>
                         <td style={{ padding: '0.75rem', textAlign: 'right' }}>
-                          <button
-                            onClick={() => handleDeleteServer(backend.name, server.id, server.server_name)}
-                            style={{
-                              ...buttonStyle,
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '0.25rem',
-                              background: '#dc2626',
-                              color: '#ffffff',
-                              padding: '0.25rem 0.5rem',
-                              fontSize: '0.75rem'
-                            }}
-                          >
-                            <Trash2 size={12} />
-                            Delete
-                          </button>
+                          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                            <button
+                              onClick={() => handleToggleServer(backend.name, server.id, server.enabled)}
+                              style={{
+                                ...buttonStyle,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.25rem',
+                                background: server.enabled ? '#f59e0b' : '#059669',
+                                color: '#ffffff',
+                                padding: '0.25rem 0.5rem',
+                                fontSize: '0.75rem'
+                              }}
+                            >
+                              {server.enabled ? 'Disable' : 'Enable'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteServer(backend.name, server.id, server.server_name)}
+                              style={{
+                                ...buttonStyle,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.25rem',
+                                background: '#dc2626',
+                                color: '#ffffff',
+                                padding: '0.25rem 0.5rem',
+                                fontSize: '0.75rem'
+                              }}
+                            >
+                              <Trash2 size={12} />
+                              Delete
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

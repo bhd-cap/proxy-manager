@@ -26,6 +26,78 @@ def get_backup_directory():
     os.makedirs(backup_dir, exist_ok=True)
     return backup_dir
 
+def copy_file_with_privileges(source, destination, timeout=5):
+    """
+    Copy file to destination, using sudo if necessary.
+    Returns dict with success/error.
+    """
+    try:
+        # First try direct copy (no sudo)
+        try:
+            shutil.copy2(source, destination)
+            return {'success': True}
+        except PermissionError:
+            pass  # Try with sudo
+
+        # Check if sudo is available
+        sudo_check = subprocess.run(['which', 'sudo'], capture_output=True, timeout=2)
+        if sudo_check.returncode != 0:
+            # No sudo available - check if we're in dev mode
+            if os.getenv('SKIP_HAPROXY_RESTART', 'false').lower() == 'true':
+                return {'success': True, 'warning': 'File copy skipped (development mode)'}
+            return {'success': False, 'error': 'Permission denied and sudo not available. Set SKIP_HAPROXY_RESTART=true for development.'}
+
+        # Use sudo to copy
+        result = subprocess.run(
+            ['sudo', 'cp', source, destination],
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        if result.returncode != 0:
+            return {'success': False, 'error': f'Failed to copy file: {result.stderr}'}
+
+        return {'success': True}
+
+    except FileNotFoundError as e:
+        return {'success': False, 'error': f'File not found: {str(e)}'}
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to copy file: {str(e)}'}
+
+def restart_haproxy_service():
+    """
+    Restart HAProxy service using systemctl.
+    Returns dict with success/error.
+    """
+    try:
+        # Check if we should skip restart (dev mode)
+        if os.getenv('SKIP_HAPROXY_RESTART', 'false').lower() == 'true':
+            return {'success': True, 'warning': 'HAProxy restart skipped (development mode)'}
+
+        # Check if sudo is available
+        sudo_check = subprocess.run(['which', 'sudo'], capture_output=True, timeout=2)
+        if sudo_check.returncode != 0:
+            return {'success': False, 'error': 'sudo not available. Set SKIP_HAPROXY_RESTART=true for development.'}
+
+        # Restart HAProxy
+        result = subprocess.run(
+            ['sudo', 'systemctl', 'restart', 'haproxy'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            return {'success': False, 'error': f'Failed to restart HAProxy: {result.stderr}'}
+
+        return {'success': True}
+
+    except subprocess.TimeoutExpired:
+        return {'success': False, 'error': 'HAProxy restart timed out'}
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to restart HAProxy: {str(e)}'}
+
 def validate_haproxy_config(config_path):
     """Validate HAProxy configuration file"""
     haproxy_binary = get_haproxy_binary_path()
@@ -358,23 +430,20 @@ def write_haproxy_config(config_data):
             os.remove(temp_config_path)
             return validation_result
 
-        # Copy validated config to HAProxy location using sudo
-        copy_result = subprocess.run(
-            ['sudo', 'cp', temp_config_path, config_path],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        # Copy validated config to HAProxy location
+        copy_result = copy_file_with_privileges(temp_config_path, config_path)
 
         # Clean up temp file
         os.remove(temp_config_path)
 
-        if copy_result.returncode != 0:
-            return {'success': False, 'error': f'Failed to copy config file: {copy_result.stderr}'}
+        if not copy_result['success']:
+            return copy_result
 
         result = {'success': True, 'backup': backup_path}
         if 'warning' in validation_result:
             result['warning'] = validation_result['warning']
+        if 'warning' in copy_result:
+            result['warning'] = copy_result.get('warning', result.get('warning'))
 
         return result
 
@@ -547,44 +616,39 @@ def apply_config_and_restart(username, ip_address):
             os.remove(temp_config_path)
             return validation_result
 
-        # Copy validated config to HAProxy config location using sudo
-        copy_result = subprocess.run(
-            ['sudo', 'cp', temp_config_path, config_path],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        # Copy validated config to HAProxy config location
+        copy_result = copy_file_with_privileges(temp_config_path, config_path)
 
-        if copy_result.returncode != 0:
+        if not copy_result['success']:
             os.remove(temp_config_path)
-            return {'success': False, 'error': f'Failed to copy config file: {copy_result.stderr}'}
+            return copy_result
 
         # Clean up temp file
         os.remove(temp_config_path)
 
         # Restart HAProxy
-        restart_result = subprocess.run(
-            ['sudo', 'systemctl', 'restart', 'haproxy'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        restart_result = restart_haproxy_service()
 
-        if restart_result.returncode != 0:
+        if not restart_result['success']:
             # Restore backup if restart fails
-            restore_result = subprocess.run(
-                ['sudo', 'cp', backup_path, config_path],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            return {'success': False, 'error': f'Failed to restart HAProxy: {restart_result.stderr}'}
+            restore_result = copy_file_with_privileges(backup_path, config_path)
+            return restart_result
 
         log_audit(username, 'apply_config', 'haproxy', None, 'Configuration applied and service restarted', ip_address)
 
         result = {'success': True, 'backup': backup_path, 'message': 'Configuration applied and HAProxy restarted successfully'}
+
+        # Collect all warnings
+        warnings = []
         if 'warning' in validation_result:
-            result['warning'] = validation_result['warning']
+            warnings.append(validation_result['warning'])
+        if 'warning' in copy_result:
+            warnings.append(copy_result['warning'])
+        if 'warning' in restart_result:
+            warnings.append(restart_result['warning'])
+
+        if warnings:
+            result['warning'] = '; '.join(warnings)
 
         return result
 
@@ -663,44 +727,39 @@ def restore_backup(backup_id, username, ip_address):
             conn.close()
             return validation_result
 
-        # Copy backup to HAProxy config location using sudo
-        copy_result = subprocess.run(
-            ['sudo', 'cp', backup_path, config_path],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        # Copy backup to HAProxy config location
+        copy_result = copy_file_with_privileges(backup_path, config_path)
 
-        if copy_result.returncode != 0:
+        if not copy_result['success']:
             conn.close()
-            return {'success': False, 'error': f'Failed to copy backup file: {copy_result.stderr}'}
+            return copy_result
 
         # Restart HAProxy
-        restart_result = subprocess.run(
-            ['sudo', 'systemctl', 'restart', 'haproxy'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        restart_result = restart_haproxy_service()
 
-        if restart_result.returncode != 0:
+        if not restart_result['success']:
             # Restore current config if restart fails
-            restore_result = subprocess.run(
-                ['sudo', 'cp', current_backup_path, config_path],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            restore_result = copy_file_with_privileges(current_backup_path, config_path)
             conn.close()
-            return {'success': False, 'error': f'Failed to restart HAProxy: {restart_result.stderr}'}
+            return restart_result
 
         log_audit(username, 'restore_backup', 'haproxy', backup['filename'], f'Restored backup ID {backup_id}', ip_address)
 
         conn.close()
 
         result = {'success': True, 'message': f'Backup restored successfully: {backup["filename"]}'}
+
+        # Collect all warnings
+        warnings = []
         if 'warning' in validation_result:
-            result['warning'] = validation_result['warning']
+            warnings.append(validation_result['warning'])
+        if 'warning' in copy_result:
+            warnings.append(copy_result['warning'])
+        if 'warning' in restart_result:
+            warnings.append(restart_result['warning'])
+
+        if warnings:
+            result['warning'] = '; '.join(warnings)
 
         return result
 
